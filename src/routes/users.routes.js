@@ -216,5 +216,52 @@ router.delete("/:id", auth, requireRole("ADMIN"), async (req, res) => {
     return res.status(500).json({ error: "Failed to delete agent" });
   }
 });
+// GET /api/users?role=AGENT&includeInactive=true  (ADMIN)
+router.get("/", auth, requireRole("ADMIN"), async (req, res) => {
+  const schema = z.object({
+    role: z.enum(["ADMIN", "AGENT"]).optional(),
+    includeInactive: z
+      .union([z.literal("true"), z.literal("false")])
+      .optional(),
+  });
+
+  const parsed = schema.safeParse(req.query);
+  if (!parsed.success) {
+    return res
+      .status(400)
+      .json({ error: "Invalid query", details: parsed.error.flatten() });
+  }
+
+  const includeInactive = parsed.data.includeInactive === "true";
+
+  const where = {
+    ...(includeInactive ? {} : { isActive: true }),
+    ...(parsed.data.role ? { role: parsed.data.role } : {}),
+  };
+
+  const users = await prisma.user.findMany({
+    where,
+    orderBy: [{ sortOrder: "asc" }, { fullName: "asc" }],
+    select: {
+      id: true,
+      fullName: true,
+      email: true,
+      phone: true,
+      role: true,
+      isActive: true,
+
+      // profile fields
+      slug: true,
+      title: true,
+      bio: true,
+      languages: true,
+      photoUrl: true,
+      hero: true,
+      sortOrder: true,
+    },
+  });
+
+  res.json({ items: users });
+});
 
 module.exports = router;
