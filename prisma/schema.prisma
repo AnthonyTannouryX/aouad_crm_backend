@@ -106,11 +106,10 @@ model Client {
   interestedArea  String?
   budgetMin       Int?
   budgetMax       Int?
-  bedrooms Int?
+  bedrooms        Int?
 
   urgency         Urgency
 
-  // ✅ added to match your UI
   status          ClientStatus  @default(OPEN)
   projectShared   String?
   feedback        String?
@@ -133,9 +132,9 @@ model Client {
 
 model Listing {
   id              String          @id @default(cuid())
-  latitude     Float?
-  longitude    Float?
-  addressText  String?
+  latitude        Float?
+  longitude       Float?
+  addressText     String?
 
   listingType     ListingType     @default(OFF_PLAN)
   featured        Boolean         @default(false)
@@ -214,7 +213,6 @@ model ListingImage {
   @@index([order])
 }
 
-
 model Developer {
   id            String   @id @default(cuid())
   name          String
@@ -229,21 +227,22 @@ model Developer {
   @@index([isFeatured])
   @@index([featuredOrder])
 }
+
 model CareerJob {
   id              String   @id @default(cuid())
   title           String
-  type            String   // Full-time, Part-time...
+  type            String
   location        String
   dept            String
-  workMode        String?  // Onsite / Hybrid / Remote
-  seniority       String?  // Junior / Mid / Senior
-  currency        String?  // AED, USD
+  workMode        String?
+  seniority       String?
+  currency        String?
   salaryMin       Int?
   salaryMax       Int?
   responsibilities String?
   requirements    String?
   benefits        String?
-  applyEmail      String?  // optional override (default hr@aouad.com)
+  applyEmail      String?
   isActive        Boolean  @default(true)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
@@ -260,7 +259,24 @@ model CareerApplication {
   email       String
   phone       String?
   coverLetter String?
-  cvUrl       String?   // saved file URL like /uploads/cv/xxx.pdf
+  cvUrl       String?
 
   createdAt   DateTime @default(now())
+}
+
+
+model ClientStory {
+  id          String   @id @default(cuid())
+
+  clientName  String
+  clientTitle String?  // this is your “status”
+  quote       String
+
+  isHidden    Boolean  @default(false) // optional, keep if you still want hide/show
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([isHidden])
+  @@index([createdAt])
 }

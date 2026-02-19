@@ -1,4 +1,3 @@
-// src/routes/public.routes.js
 const router = require("express").Router();
 const { z } = require("zod");
 const { prisma } = require("../lib/prisma");
@@ -8,6 +7,34 @@ const { prisma } = require("../lib/prisma");
 ========================= */
 const toSqm = (sqft) =>
   typeof sqft === "number" ? Math.round(sqft * 0.092903) : null;
+
+/* =========================
+   ✅ PUBLIC: CLIENT STORIES (TESTIMONIALS)
+   GET /api/public/client-stories?limit=10
+========================= */
+router.get("/client-stories", async (req, res) => {
+  try {
+    const limit = Math.min(Number(req.query.limit || 10), 50);
+
+    const items = await prisma.clientStory.findMany({
+      where: { isActive: true },
+      take: limit,
+      orderBy: [{ sortOrder: "asc" }, { createdAt: "desc" }],
+      select: {
+        id: true,
+        name: true,
+        role: true,
+        quote: true,
+        imageUrl: true,
+      },
+    });
+
+    res.json({ items });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "Failed to load client stories" });
+  }
+});
 
 /* =========================
    PUBLIC: AGENTS
@@ -103,7 +130,7 @@ router.get("/agents/:slug/listings", async (req, res) => {
         images: { orderBy: { order: "asc" } },
         assignedAgent: {
           select: {
-            id: true,               // ✅ ADD
+            id: true,
             fullName: true,
             slug: true,
             phone: true,
@@ -134,7 +161,6 @@ router.get("/agents/:slug/listings", async (req, res) => {
         completionYear: l.completionYear || null,
         handover: l.completionYear ? `Handover by ${l.completionYear}` : null,
 
-        // ✅ MAP
         latitude: l.latitude ?? null,
         longitude: l.longitude ?? null,
         addressText: l.addressText ?? null,
@@ -156,12 +182,11 @@ router.get("/agents/:slug/listings", async (req, res) => {
         sizeSqft: l.sizeSqft ?? null,
         sizeSqm: l.sizeSqm ?? toSqm(l.sizeSqft),
 
-        // ✅ ADD assignedAgentId too (nice for frontend)
         assignedAgentId: l.assignedAgentId ?? null,
 
         agent: l.assignedAgent
           ? {
-            id: l.assignedAgent.id, // ✅ ADD
+            id: l.assignedAgent.id,
             fullName: l.assignedAgent.fullName,
             slug: l.assignedAgent.slug,
             phone: l.assignedAgent.phone,
@@ -223,7 +248,7 @@ router.get("/listings", async (req, res) => {
         images: { orderBy: { order: "asc" } },
         assignedAgent: {
           select: {
-            id: true,               // ✅ ADD
+            id: true,
             fullName: true,
             slug: true,
             phone: true,
@@ -266,12 +291,11 @@ router.get("/listings", async (req, res) => {
         sizeSqft: l.sizeSqft ?? null,
         sizeSqm: l.sizeSqm ?? toSqm(l.sizeSqft),
 
-        // ✅ IMPORTANT: expose agent id + assignedAgentId
         assignedAgentId: l.assignedAgentId ?? null,
 
         agent: l.assignedAgent
           ? {
-            id: l.assignedAgent.id, // ✅ ADD
+            id: l.assignedAgent.id,
             fullName: l.assignedAgent.fullName,
             slug: l.assignedAgent.slug,
             phone: l.assignedAgent.phone,
@@ -301,7 +325,7 @@ router.get("/listings/:id", async (req, res) => {
         images: { orderBy: { order: "asc" } },
         assignedAgent: {
           select: {
-            id: true,               // ✅ ADD
+            id: true,
             fullName: true,
             slug: true,
             email: true,
@@ -364,7 +388,7 @@ router.get("/listings/:id", async (req, res) => {
 
         agent: listing.assignedAgent
           ? {
-            id: listing.assignedAgent.id, // ✅ ADD
+            id: listing.assignedAgent.id,
             fullName: listing.assignedAgent.fullName,
             slug: listing.assignedAgent.slug,
             email: listing.assignedAgent.email,
