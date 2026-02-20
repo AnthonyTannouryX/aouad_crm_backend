@@ -64,31 +64,68 @@ enum Currency {
   EUR
 }
 
+/**
+ * =========================
+ * ✅ NEW: Lead enums
+ * =========================
+ */
+enum LeadStatus {
+  NEW
+  CONTACTED
+  QUALIFIED
+  CLOSED
+  SPAM
+}
+
+enum LeadSource {
+  WEBSITE
+  WHATSAPP
+  INSTAGRAM
+  REFERRAL
+  WALK_IN
+  OTHER
+}
+
 model User {
-  id           String   @id @default(cuid())
+  id           String  @id @default(cuid())
   fullName     String
-  email        String   @unique
+  email        String  @unique
   phone        String?
   passwordHash String
-  role         Role     @default(AGENT)
-  isActive     Boolean  @default(true)
+  role         Role    @default(AGENT)
+  isActive     Boolean @default(true)
 
-  slug       String?  @unique
-  title      String?
-  bio        String?
-  languages  String[] @default([])
-  photoUrl   String?
-  hero       String?
-  sortOrder  Int      @default(0)
+  slug      String?  @unique
+  title     String?
+  bio       String?
+  languages String[] @default([])
+  photoUrl  String?
+  hero      String?
+  sortOrder Int      @default(0)
 
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   listingsCreated  Listing[] @relation("ListingsCreated")
   listingsAssigned Listing[] @relation("ListingsAssigned")
 
-  clientsCreated   Client[]  @relation("ClientsCreated")
-  clientsAssigned  Client[]  @relation("ClientAssignedTo")
+  clientsCreated  Client[] @relation("ClientsCreated")
+  clientsAssigned Client[] @relation("ClientAssignedTo")
+
+  /**
+   * =========================
+   * ✅ NEW: agent leads inbox
+   * =========================
+   */
+  leadsAssigned Lead[] @relation("LeadsAssigned")
+
+  /**
+   * =========================
+   * ✅ NEW: availability + meetings
+   * =========================
+   */
+  scheduleRows AgentSchedule[]
+  appointments Appointment[]
 
   @@index([role])
   @@index([isActive])
@@ -96,32 +133,32 @@ model User {
 }
 
 model Client {
-  id              String       @id @default(cuid())
-  clientType      ClientType
-  name            String
-  dateContacted   DateTime
-  source          String
-  phone           String?
-  email           String?
-  interestedArea  String?
-  budgetMin       Int?
-  budgetMax       Int?
-  bedrooms        Int?
+  id             String     @id @default(cuid())
+  clientType     ClientType
+  name           String
+  dateContacted  DateTime
+  source         String
+  phone          String?
+  email          String?
+  interestedArea String?
+  budgetMin      Int?
+  budgetMax      Int?
+  bedrooms       Int?
 
-  urgency         Urgency
+  urgency Urgency
 
-  status          ClientStatus  @default(OPEN)
-  projectShared   String?
-  feedback        String?
+  status        ClientStatus @default(OPEN)
+  projectShared String?
+  feedback      String?
 
   agentAssignedId String?
-  agentAssigned   User?         @relation("ClientAssignedTo", fields: [agentAssignedId], references: [id])
+  agentAssigned   User?   @relation("ClientAssignedTo", fields: [agentAssignedId], references: [id])
 
-  createdById     String
-  createdBy       User          @relation("ClientsCreated", fields: [createdById], references: [id])
+  createdById String
+  createdBy   User   @relation("ClientsCreated", fields: [createdById], references: [id])
 
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([agentAssignedId])
   @@index([createdById])
@@ -131,80 +168,92 @@ model Client {
 }
 
 model Listing {
-  id              String          @id @default(cuid())
-  latitude        Float?
-  longitude       Float?
-  addressText     String?
+  id          String  @id @default(cuid())
+  latitude    Float?
+  longitude   Float?
+  addressText String?
 
-  listingType     ListingType     @default(OFF_PLAN)
-  featured        Boolean         @default(false)
-  isHidden        Boolean         @default(false)
-  deletedAt       DateTime?
+  listingType ListingType @default(OFF_PLAN)
+  featured    Boolean     @default(false)
+  isHidden    Boolean     @default(false)
+  deletedAt   DateTime?
 
-  country         String?
-  locationLabel   String?
-  community       String?
-  developerName   String?
-  completionYear  Int?
-  startingPrice   Int?
-  currency        Currency        @default(USD)
-  description     String?
+  country        String?
+  locationLabel  String?
+  community      String?
+  developerName  String?
+  completionYear Int?
+  startingPrice  Int?
+  currency       Currency @default(USD)
+  description    String?
 
-  title           String
-  propertyType    PropertyType
-  category        ListingCategory
-  status          ListingStatus   @default(AVAILABLE)
+  title        String
+  propertyType PropertyType
+  category     ListingCategory
+  status       ListingStatus   @default(AVAILABLE)
 
-  city            String
-  area            String
-  projectName     String?
+  city        String
+  area        String
+  projectName String?
 
-  price           Int?
-  paymentPlan     String?
-  sizeSqft        Int?
-  sizeSqm         Int?
-  bedrooms        Int?
-  bathrooms       Int?
-  parking         Int?
-  view            String?
+  price       Int?
+  paymentPlan String?
+  sizeSqft    Int?
+  sizeSqm     Int?
+  bedrooms    Int?
+  bathrooms   Int?
+  parking     Int?
+  view        String?
 
-  ownerName       String?
-  ownerType       String?
-  listingSource   String?
+  ownerName     String?
+  ownerType     String?
+  listingSource String?
 
-  createdById     String
-  createdBy       User            @relation("ListingsCreated", fields: [createdById], references: [id])
+  createdById String
+  createdBy   User   @relation("ListingsCreated", fields: [createdById], references: [id])
 
   assignedAgentId String?
-  assignedAgent   User?           @relation("ListingsAssigned", fields: [assignedAgentId], references: [id])
+  assignedAgent   User?   @relation("ListingsAssigned", fields: [assignedAgentId], references: [id])
 
-  images          ListingImage[]
+  images ListingImage[]
 
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
+  /**
+   * =========================
+   * ✅ NEW: listing leads
+   * =========================
+   */
+  leads Lead[]
+
+  /**
+   * =========================
+   * ✅ NEW: listing appointments
+   * =========================
+   */
+  appointments Appointment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([area])
   @@index([status])
   @@index([assignedAgentId])
   @@index([createdById])
-
   @@index([listingType])
   @@index([featured])
   @@index([isHidden])
   @@index([deletedAt])
-
   @@index([country])
 }
 
 model ListingImage {
-  id        String   @id @default(cuid())
+  id        String  @id @default(cuid())
   listingId String
-  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  listing   Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
 
-  url       String
-  key       String
-  order     Int      @default(0)
-  isCover   Boolean  @default(false)
+  url     String
+  key     String
+  order   Int     @default(0)
+  isCover Boolean @default(false)
 
   createdAt DateTime @default(now())
 
@@ -229,31 +278,31 @@ model Developer {
 }
 
 model CareerJob {
-  id              String   @id @default(cuid())
-  title           String
-  type            String
-  location        String
-  dept            String
-  workMode        String?
-  seniority       String?
-  currency        String?
-  salaryMin       Int?
-  salaryMax       Int?
+  id               String   @id @default(cuid())
+  title            String
+  type             String
+  location         String
+  dept             String
+  workMode         String?
+  seniority        String?
+  currency         String?
+  salaryMin        Int?
+  salaryMax        Int?
   responsibilities String?
-  requirements    String?
-  benefits        String?
-  applyEmail      String?
-  isActive        Boolean  @default(true)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  requirements     String?
+  benefits         String?
+  applyEmail       String?
+  isActive         Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
-  applications    CareerApplication[]
+  applications CareerApplication[]
 }
 
 model CareerApplication {
-  id          String   @id @default(cuid())
-  jobId       String
-  job         CareerJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  id    String    @id @default(cuid())
+  jobId String
+  job   CareerJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
 
   fullName    String
   email       String
@@ -261,22 +310,131 @@ model CareerApplication {
   coverLetter String?
   cvUrl       String?
 
-  createdAt   DateTime @default(now())
+  createdAt DateTime @default(now())
 }
 
-
 model ClientStory {
-  id          String   @id @default(cuid())
+  id String @id @default(cuid())
 
   clientName  String
-  clientTitle String?  // this is your “status”
+  clientTitle String?
   quote       String
 
-  isHidden    Boolean  @default(false) // optional, keep if you still want hide/show
+  isHidden Boolean @default(false)
 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([isHidden])
   @@index([createdAt])
+}
+
+/**
+ * =========================
+ * ✅ NEW: Lead model
+ * =========================
+ */
+model Lead {
+  id String @id @default(cuid())
+
+  firstName String
+  lastName  String
+  email     String?
+  phone     String?
+  note      String?
+
+  source LeadSource @default(WEBSITE)
+  status LeadStatus @default(NEW)
+
+  listingId String?
+  listing   Listing? @relation(fields: [listingId], references: [id], onDelete: SetNull)
+
+  assignedAgentId String?
+  assignedAgent   User?   @relation("LeadsAssigned", fields: [assignedAgentId], references: [id], onDelete: SetNull)
+
+  pageUrl   String?
+  userAgent String?
+  ip        String?
+
+  /**
+   * =========================
+   * ✅ NEW: link appointments (optional)
+   * =========================
+   */
+  appointments Appointment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([source])
+  @@index([listingId])
+  @@index([assignedAgentId])
+  @@index([createdAt])
+}
+
+/**
+ * =========================
+ * ✅ Agent availability + appointments
+ * =========================
+ */
+enum AppointmentStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+}
+
+model AgentSchedule {
+  id String @id @default(cuid())
+
+  agentId String
+  agent   User   @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  dayOfWeek Int // 0..6 (Sunday..Saturday)
+  startHHMM String // "09:00"
+  endHHMM   String // "18:00"
+  slotMin   Int    @default(30)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([agentId, dayOfWeek])
+  @@index([agentId])
+  @@index([dayOfWeek])
+}
+
+model Appointment {
+  id String @id @default(cuid())
+
+  agentId String
+  agent   User   @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  startAt     DateTime
+  durationMin Int      @default(30)
+
+  customerName  String
+  customerPhone String
+  customerEmail String?
+
+  note   String?
+  source String? // "website" | "agent_panel" etc
+  status AppointmentStatus @default(CONFIRMED)
+
+  // optional link to lead
+  leadId String?
+  lead   Lead?   @relation(fields: [leadId], references: [id], onDelete: SetNull)
+
+  // optional link to listing
+  listingId String?
+  listing   Listing? @relation(fields: [listingId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([agentId])
+  @@index([startAt])
+  @@index([status])
+  @@index([leadId])
+  @@index([listingId])
+  @@index([agentId, startAt])
 }

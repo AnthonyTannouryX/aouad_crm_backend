@@ -9,6 +9,69 @@ const toSqm = (sqft) =>
   typeof sqft === "number" ? Math.round(sqft * 0.092903) : null;
 
 /* =========================
+   ✅ PUBLIC: LEADS (SCHEDULE CALL)
+   POST /api/public/leads/schedule-call
+========================= */
+const ScheduleCallSchema = z.object({
+  listingId: z.string().optional(),
+  agentId: z.string().optional(),
+  firstName: z.string().min(1),
+  lastName: z.string().min(1),
+  email: z.string().email().optional().or(z.literal("")),
+  phone: z.string().min(6),
+  note: z.string().optional().or(z.literal("")),
+  pageUrl: z.string().optional(),
+});
+
+router.post("/leads/schedule-call", async (req, res) => {
+  try {
+    const parsed = ScheduleCallSchema.parse(req.body);
+
+    let listing = null;
+    if (parsed.listingId) {
+      listing = await prisma.listing.findUnique({
+        where: { id: parsed.listingId },
+        select: { id: true, assignedAgentId: true },
+      });
+      if (!listing) {
+        return res.status(404).json({ error: "Listing not found" });
+      }
+    }
+
+    const assignedAgentId = parsed.agentId || listing?.assignedAgentId || null;
+
+    const lead = await prisma.lead.create({
+      data: {
+        firstName: parsed.firstName,
+        lastName: parsed.lastName,
+        email: parsed.email || null,
+        phone: parsed.phone,
+        note: parsed.note || null,
+        source: "WEBSITE",
+        status: "NEW",
+        listingId: listing?.id || parsed.listingId || null,
+        assignedAgentId,
+        pageUrl: parsed.pageUrl || null,
+        userAgent: req.get("user-agent") || null,
+        ip: (req.headers["x-forwarded-for"] || req.socket.remoteAddress || "")
+          .toString()
+          .slice(0, 64),
+      },
+    });
+
+    res.json({ ok: true, leadId: lead.id });
+  } catch (err) {
+    console.error(err);
+    if (err?.name === "ZodError") {
+      return res
+        .status(400)
+        .json({ error: err.errors?.[0]?.message || "Invalid payload" });
+    }
+    res.status(500).json({ error: "Failed to submit lead" });
+  }
+});
+
+/* =========================
    ✅ PUBLIC: CLIENT STORIES (TESTIMONIALS)
    GET /api/public/client-stories?limit=10
 ========================= */

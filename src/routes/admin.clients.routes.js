@@ -3,11 +3,18 @@ const router = require("express").Router();
 const { z } = require("zod");
 const { prisma } = require("../lib/prisma");
 
-// ✅ robust import: supports auth.js exporting `auth` directly OR { auth }
+// ✅ robust import: supports auth.js exporting `auth` directly OR { auth, requireRole }
 const authMod = require("../middlewares/auth");
 const auth = typeof authMod === "function" ? authMod : authMod.auth;
 
-const { requireRole } = require("../middlewares/requireRole");
+// requireRole may live in its own file OR auth.js
+let requireRole = null;
+try {
+    const rrMod = require("../middlewares/requireRole");
+    requireRole = typeof rrMod === "function" ? rrMod : rrMod.requireRole;
+} catch {
+    requireRole = typeof authMod === "object" ? authMod.requireRole : null;
+}
 
 if (typeof auth !== "function") {
     throw new Error(
@@ -16,11 +23,13 @@ if (typeof auth !== "function") {
 }
 if (typeof requireRole !== "function") {
     throw new Error(
-        "requireRole is not a function. Check src/middlewares/requireRole.js exports."
+        "requireRole is not a function. Check middlewares/requireRole.js or auth.js exports."
     );
 }
 
-// Enums aligned with Prisma schema
+/* =========================
+   Enums (keep aligned with Prisma)
+========================= */
 const ClientType = ["LEAD", "CLIENT", "INVESTOR", "OWNER"];
 const Urgency = ["HOT", "WARM", "COLD"];
 const ClientStatus = ["OPEN", "FOLLOW_UP", "CLOSED"];
@@ -36,6 +45,9 @@ const SOURCES = [
     "OTHER",
 ];
 
+/* =========================
+   Schemas
+========================= */
 const CreateSchema = z.object({
     clientType: z.enum(ClientType).default("LEAD"),
     name: z.string().min(2),
@@ -46,7 +58,7 @@ const CreateSchema = z.object({
     interestedArea: z.string().nullable().optional(),
     budgetMin: z.number().int().nullable().optional(),
     budgetMax: z.number().int().nullable().optional(),
-    bedrooms: z.number().int().nullable().optional(), // ✅ if your Prisma has it
+    bedrooms: z.number().int().nullable().optional(),
     urgency: z.enum(Urgency).default("WARM"),
     status: z.enum(ClientStatus).optional(),
     agentAssignedId: z.string().nullable().optional(),
@@ -68,13 +80,16 @@ const UpdateSchema = z.object({
 
     budgetMin: z.number().int().nullable().optional(),
     budgetMax: z.number().int().nullable().optional(),
-    bedrooms: z.number().int().nullable().optional(), // ✅ if your Prisma has it
+    bedrooms: z.number().int().nullable().optional(),
 
     agentAssignedId: z.string().nullable().optional(),
     projectShared: z.string().nullable().optional(),
     feedback: z.string().nullable().optional(),
 });
 
+/* =========================
+   Helpers
+========================= */
 function parseDateOrNow(s) {
     if (!s) return new Date();
     const d = new Date(s);
@@ -88,14 +103,10 @@ function normSource(s) {
 
 /* =========================
    ADMIN: CLIENTS
-   Mount: app.use("/api/admin", routerFile)
-   Routes:
-   GET   /api/admin/clients
-   POST  /api/admin/clients
-   PATCH /api/admin/clients/:id   ✅ used by your "Close Deal"
+   Mount: /api/admin/clients
 ========================= */
 
-// ✅ ADMIN ONLY: GET /api/admin/clients
+// ✅ GET all clients (ADMIN ONLY)
 router.get("/clients", auth, requireRole("ADMIN"), async (req, res) => {
     try {
         const limit = Math.min(Number(req.query.limit || 200), 500);
@@ -116,12 +127,12 @@ router.get("/clients", auth, requireRole("ADMIN"), async (req, res) => {
     }
 });
 
-// ✅ ADMIN ONLY: POST /api/admin/clients
+// ✅ CREATE client / lead (ADMIN ONLY)
 router.post("/clients", auth, requireRole("ADMIN"), async (req, res) => {
     try {
         const parsed = CreateSchema.parse(req.body);
 
-        const createdById = req.user?.sub;
+        const createdById = req.user?.id;
         if (!createdById)
             return res.status(401).json({ error: "Unauthenticated" });
 
@@ -140,15 +151,18 @@ router.post("/clients", auth, requireRole("ADMIN"), async (req, res) => {
 
                 budgetMin: parsed.budgetMin ?? null,
                 budgetMax: parsed.budgetMax ?? null,
-                bedrooms: parsed.bedrooms ?? null, // ✅ if field exists
-                urgency: parsed.urgency,
+                bedrooms: parsed.bedrooms ?? null,
 
+                urgency: parsed.urgency,
                 status: parsed.status ?? "OPEN",
+
                 agentAssignedId: parsed.agentAssignedId ?? null,
                 projectShared: parsed.projectShared
                     ? String(parsed.projectShared).trim()
                     : null,
-                feedback: parsed.feedback ? String(parsed.feedback).trim() : null,
+                feedback: parsed.feedback
+                    ? String(parsed.feedback).trim()
+                    : null,
 
                 createdById,
             },
@@ -170,32 +184,27 @@ router.post("/clients", auth, requireRole("ADMIN"), async (req, res) => {
     }
 });
 
-// ✅ ADMIN ONLY: PATCH /api/admin/clients/:id  (THIS FIXES YOUR 404)
+// ✅ UPDATE client (ADMIN ONLY)
 router.patch("/clients/:id", auth, requireRole("ADMIN"), async (req, res) => {
     try {
         const id = String(req.params.id || "").trim();
         if (!id) return res.status(400).json({ error: "Missing id" });
 
         const parsed = UpdateSchema.parse(req.body);
-
         const data = {};
 
-        // only set fields if provided
         if (parsed.clientType !== undefined) data.clientType = parsed.clientType;
         if (parsed.urgency !== undefined) data.urgency = parsed.urgency;
         if (parsed.status !== undefined) data.status = parsed.status;
 
         if (parsed.source !== undefined) data.source = normSource(parsed.source);
-
         if (parsed.dateContacted !== undefined)
             data.dateContacted = parseDateOrNow(parsed.dateContacted);
 
         if (parsed.phone !== undefined)
             data.phone = parsed.phone ? String(parsed.phone).trim() : null;
-
         if (parsed.email !== undefined)
             data.email = parsed.email ? String(parsed.email).trim() : null;
-
         if (parsed.interestedArea !== undefined)
             data.interestedArea = parsed.interestedArea
                 ? String(parsed.interestedArea).trim()
@@ -214,7 +223,9 @@ router.patch("/clients/:id", auth, requireRole("ADMIN"), async (req, res) => {
                 : null;
 
         if (parsed.feedback !== undefined)
-            data.feedback = parsed.feedback ? String(parsed.feedback).trim() : null;
+            data.feedback = parsed.feedback
+                ? String(parsed.feedback).trim()
+                : null;
 
         const item = await prisma.client.update({
             where: { id },
@@ -235,7 +246,6 @@ router.patch("/clients/:id", auth, requireRole("ADMIN"), async (req, res) => {
                 .json({ error: e.errors?.[0]?.message || "Invalid payload" });
         }
 
-        // Prisma record not found
         if (e?.code === "P2025") {
             return res.status(404).json({ error: "Client not found" });
         }

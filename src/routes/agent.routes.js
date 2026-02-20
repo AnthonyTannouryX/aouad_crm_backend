@@ -9,15 +9,12 @@ const { auth, requireRole } = require("../middlewares/auth");
 // ✅ AGENT ONLY
 router.use(auth, requireRole("AGENT"));
 
-/* =========================
-   Helpers
-========================= */
 function agentIdFromReq(req) {
-    return req.user?.id; // ✅ normalized by auth middleware
+    return req.user?.id;
 }
 
 /* =========================
-   GET /api/agent/dashboard
+   DASHBOARD
 ========================= */
 router.get("/dashboard", async (req, res) => {
     const agentId = agentIdFromReq(req);
@@ -44,7 +41,7 @@ router.get("/dashboard", async (req, res) => {
 });
 
 /* =========================
-   GET /api/agent/clients
+   CLIENTS
 ========================= */
 router.get("/clients", async (req, res) => {
     const agentId = agentIdFromReq(req);
@@ -57,9 +54,6 @@ router.get("/clients", async (req, res) => {
     res.json(clients);
 });
 
-/* =========================
-   PATCH /api/agent/clients/:id
-========================= */
 const PatchClientSchema = z.object({
     status: z.enum(["OPEN", "FOLLOW_UP", "CLOSED"]).optional(),
     feedback: z.string().max(2000).optional().nullable(),
@@ -87,8 +81,7 @@ router.patch("/clients/:id", async (req, res) => {
 });
 
 /* =========================
-   GET /api/agent/listings
-   (only own listings)
+   LISTINGS (own)
 ========================= */
 router.get("/listings", async (req, res) => {
     const agentId = agentIdFromReq(req);
@@ -102,10 +95,6 @@ router.get("/listings", async (req, res) => {
     res.json({ items: listings });
 });
 
-/* =========================
-   POST /api/agent/listings
-   ✅ Auto-assign + set createdById
-========================= */
 const CreateListingSchema = z.object({
     title: z.string().min(2).max(180),
     country: z.string().min(2).max(80).default("dubai"),
@@ -152,7 +141,6 @@ router.post("/listings", async (req, res) => {
     }
 
     try {
-        // ✅ FORCE assignment + creator, ignore anything sent by the client
         const created = await prisma.listing.create({
             data: {
                 ...parsed.data,
@@ -168,9 +156,6 @@ router.post("/listings", async (req, res) => {
     }
 });
 
-/* =========================
-   PATCH /api/agent/listings/:id
-========================= */
 const PatchListingSchema = z.object({
     featured: z.boolean().optional(),
     isHidden: z.boolean().optional(),
@@ -178,7 +163,6 @@ const PatchListingSchema = z.object({
     startingPrice: z.number().int().optional().nullable(),
     description: z.string().max(8000).optional().nullable(),
 
-    // allow agent to update basic fields too if you want:
     title: z.string().min(2).max(180).optional(),
     city: z.string().min(2).max(120).optional(),
     area: z.string().min(2).max(160).optional(),
@@ -199,7 +183,6 @@ router.patch("/listings/:id", async (req, res) => {
     if (existing.assignedAgentId !== agentId)
         return res.status(403).json({ error: "Forbidden" });
 
-    // ✅ never allow changing assignedAgentId
     const { assignedAgentId, ...safe } = parsed.data;
 
     const updated = await prisma.listing.update({
@@ -211,7 +194,7 @@ router.patch("/listings/:id", async (req, res) => {
 });
 
 /* =========================
-   GET /api/agent/me
+   ME
 ========================= */
 router.get("/me", async (req, res) => {
     const agentId = agentIdFromReq(req);
@@ -240,9 +223,6 @@ router.get("/me", async (req, res) => {
     res.json(me);
 });
 
-/* =========================
-   PATCH /api/agent/me
-========================= */
 const PatchMeSchema = z.object({
     fullName: z.string().min(2).max(120).optional(),
     phone: z.string().max(40).optional().nullable(),
@@ -277,7 +257,7 @@ router.patch("/me", async (req, res) => {
 });
 
 /* =========================
-   POST /api/agent/change-password
+   CHANGE PASSWORD
 ========================= */
 const ChangePasswordSchema = z.object({
     currentPassword: z.string().min(6),
@@ -395,6 +375,353 @@ router.post("/appointments", async (req, res) => {
     });
 
     res.json(created);
+});
+
+/* =========================
+   ✅ LEADS INBOX (MERGED)
+   GET /api/agent/leads
+   PATCH /api/agent/leads/:id
+   DELETE /api/agent/leads/:id
+========================= */
+
+// ✅ IMPORTANT: AgentLeadsPage edits ADMIN_LEAD with many fields
+// so we must allow them here safely.
+const AgentLeadPatchSchema = z.object({
+    // schedule-call Lead table
+    status: z.enum(["NEW", "CONTACTED", "QUALIFIED", "CLOSED", "SPAM"]).optional(),
+    note: z.string().max(4000).optional().nullable(),
+
+    // Client table (ADMIN_LEAD)
+    clientType: z.enum(["LEAD", "CLIENT", "INVESTOR", "OWNER"]).optional(),
+    name: z.string().min(2).max(160).optional(),
+    dateContacted: z.string().min(8).optional(), // yyyy-mm-dd
+    source: z.string().max(80).optional(),
+    phone: z.string().min(3).max(60).optional().nullable(),
+    email: z.string().email().optional().or(z.literal("")).nullable(),
+
+    interestedArea: z.string().max(120).optional().nullable(),
+    budgetMin: z.number().int().optional().nullable(),
+    budgetMax: z.number().int().optional().nullable(),
+    bedrooms: z.number().int().optional().nullable(),
+    urgency: z.enum(["HOT", "WARM", "COLD"]).optional(),
+
+    // allow old naming too
+    clientStatus: z.enum(["OPEN", "FOLLOW_UP", "CLOSED"]).optional(),
+    feedback: z.string().max(2000).optional().nullable(),
+    projectShared: z.string().max(2000).optional().nullable(),
+});
+
+router.get("/leads", async (req, res) => {
+    try {
+        const agentId = agentIdFromReq(req);
+        const limit = Math.min(Number(req.query.limit || 200), 500);
+
+        // 1) Schedule-call leads (Lead table)
+        const webLeads = await prisma.lead.findMany({
+            where: { assignedAgentId: agentId },
+            take: limit,
+            orderBy: { createdAt: "desc" },
+            include: { listing: { select: { id: true, title: true } } },
+        });
+
+        // 2) Admin-assigned items (Client table) — show ALL assigned
+        const adminLeads = await prisma.client.findMany({
+            where: { agentAssignedId: agentId },
+            take: limit,
+            orderBy: { createdAt: "desc" },
+        });
+
+        const items = [
+            ...webLeads.map((x) => ({
+                kind: "SCHEDULE_CALL",
+                id: x.id,
+                createdAt: x.createdAt,
+                updatedAt: x.updatedAt,
+                firstName: x.firstName,
+                lastName: x.lastName,
+                email: x.email,
+                phone: x.phone,
+                note: x.note,
+                status: x.status,
+                listingId: x.listingId,
+                listing: x.listing ? { id: x.listing.id, title: x.listing.title } : null,
+            })),
+            ...adminLeads.map((x) => ({
+                kind: "ADMIN_LEAD",
+                id: x.id,
+                createdAt: x.createdAt,
+                updatedAt: x.updatedAt,
+
+                clientType: x.clientType,
+                name: x.name,
+                dateContacted: x.dateContacted,
+
+                firstName: (x.name || "").split(" ")[0] || "",
+                lastName: (x.name || "").split(" ").slice(1).join(" ") || "",
+
+                email: x.email,
+                phone: x.phone,
+
+                source: x.source,
+                budgetMin: x.budgetMin ?? null,
+                budgetMax: x.budgetMax ?? null,
+                bedrooms: x.bedrooms ?? null,
+
+                note: x.projectShared || x.feedback || null,
+
+                status: x.status, // OPEN/FOLLOW_UP/CLOSED
+                feedback: x.feedback || null,
+                projectShared: x.projectShared || null,
+                interestedArea: x.interestedArea || null,
+                urgency: x.urgency || null,
+            })),
+        ];
+
+        items.sort(
+            (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        );
+
+        res.json({ items: items.slice(0, limit) });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: "Failed to load leads" });
+    }
+});
+
+router.patch("/leads/:id", async (req, res) => {
+    try {
+        const agentId = agentIdFromReq(req);
+        const id = req.params.id;
+
+        const parsed = AgentLeadPatchSchema.safeParse(req.body);
+        if (!parsed.success) return res.status(400).json({ error: "Invalid body" });
+
+        // decide which table this id belongs to
+        const web = await prisma.lead.findUnique({ where: { id } });
+
+        // ---------------- schedule-call Lead ----------------
+        if (web) {
+            if (web.assignedAgentId !== agentId)
+                return res.status(403).json({ error: "Forbidden" });
+
+            const updated = await prisma.lead.update({
+                where: { id },
+                data: {
+                    status: parsed.data.status ?? undefined,
+                    note: parsed.data.note ?? undefined,
+                },
+                include: { listing: { select: { id: true, title: true } } },
+            });
+
+            return res.json({
+                item: {
+                    kind: "SCHEDULE_CALL",
+                    id: updated.id,
+                    createdAt: updated.createdAt,
+                    updatedAt: updated.updatedAt,
+                    firstName: updated.firstName,
+                    lastName: updated.lastName,
+                    email: updated.email,
+                    phone: updated.phone,
+                    note: updated.note,
+                    status: updated.status,
+                    listingId: updated.listingId,
+                    listing: updated.listing
+                        ? { id: updated.listing.id, title: updated.listing.title }
+                        : null,
+                },
+            });
+        }
+
+        // ---------------- Client (ADMIN_LEAD) ----------------
+        const client = await prisma.client.findUnique({ where: { id } });
+        if (!client) return res.status(404).json({ error: "Not found" });
+        if (client.agentAssignedId !== agentId)
+            return res.status(403).json({ error: "Forbidden" });
+
+        // allow status from frontend (OPEN/FOLLOW_UP/CLOSED)
+        const bodyStatus = req.body?.status;
+        const clientStatusFromBody =
+            ["OPEN", "FOLLOW_UP", "CLOSED"].includes(String(bodyStatus || "").toUpperCase())
+                ? String(bodyStatus || "").toUpperCase()
+                : undefined;
+
+        // dateContacted parse if present
+        let dateContacted = undefined;
+        if (parsed.data.dateContacted) {
+            const d = new Date(parsed.data.dateContacted);
+            if (Number.isNaN(d.getTime())) {
+                return res.status(400).json({ error: "Invalid dateContacted" });
+            }
+            dateContacted = d;
+        }
+
+        const updatedClient = await prisma.client.update({
+            where: { id },
+            data: {
+                // fields your AgentLeadsPage sends
+                clientType: parsed.data.clientType ?? undefined,
+                name: parsed.data.name ?? undefined,
+                dateContacted: dateContacted ?? undefined,
+                source: parsed.data.source ?? undefined,
+                phone: parsed.data.phone ?? undefined,
+                email:
+                    parsed.data.email === "" ? null : parsed.data.email ?? undefined,
+
+                interestedArea: parsed.data.interestedArea ?? undefined,
+                budgetMin: parsed.data.budgetMin ?? undefined,
+                budgetMax: parsed.data.budgetMax ?? undefined,
+                bedrooms: parsed.data.bedrooms ?? undefined,
+                urgency: parsed.data.urgency ?? undefined,
+
+                status:
+                    parsed.data.clientStatus ??
+                    clientStatusFromBody ??
+                    undefined,
+
+                feedback: parsed.data.feedback ?? undefined,
+                projectShared: parsed.data.projectShared ?? undefined,
+            },
+        });
+
+        return res.json({
+            item: {
+                kind: "ADMIN_LEAD",
+                id: updatedClient.id,
+                createdAt: updatedClient.createdAt,
+                updatedAt: updatedClient.updatedAt,
+
+                clientType: updatedClient.clientType,
+                name: updatedClient.name,
+                dateContacted: updatedClient.dateContacted,
+
+                firstName:
+                    (updatedClient.name || "").split(" ")[0] || updatedClient.name || "",
+                lastName:
+                    (updatedClient.name || "").split(" ").slice(1).join(" ") || "",
+
+                email: updatedClient.email,
+                phone: updatedClient.phone,
+
+                source: updatedClient.source,
+                budgetMin: updatedClient.budgetMin ?? null,
+                budgetMax: updatedClient.budgetMax ?? null,
+                bedrooms: updatedClient.bedrooms ?? null,
+
+                note: updatedClient.projectShared || updatedClient.feedback || null,
+
+                status: updatedClient.status,
+                feedback: updatedClient.feedback || null,
+                projectShared: updatedClient.projectShared || null,
+                interestedArea: updatedClient.interestedArea || null,
+                urgency: updatedClient.urgency || null,
+            },
+        });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: "Failed to update lead" });
+    }
+});
+
+router.delete("/leads/:id", async (req, res) => {
+    try {
+        const agentId = agentIdFromReq(req);
+        const id = req.params.id;
+
+        const web = await prisma.lead.findUnique({ where: { id } });
+        if (web) {
+            if (web.assignedAgentId !== agentId)
+                return res.status(403).json({ error: "Forbidden" });
+            await prisma.lead.delete({ where: { id } });
+            return res.json({ ok: true });
+        }
+
+        const client = await prisma.client.findUnique({ where: { id } });
+        if (!client) return res.status(404).json({ error: "Not found" });
+        if (client.agentAssignedId !== agentId)
+            return res.status(403).json({ error: "Forbidden" });
+
+        // ⚠️ If you don't want agents deleting clients, change this to:
+        // await prisma.client.update({ where:{id}, data:{ status:"CLOSED" } })
+        await prisma.client.delete({ where: { id } });
+
+        res.json({ ok: true });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: "Failed to delete lead" });
+    }
+});
+
+/* =========================
+   ✅ MANUAL CREATE LEAD (Agent)
+   POST /api/agent/leads/manual
+   Creates a Client row with clientType=LEAD
+========================= */
+const CreateManualLeadSchema = z.object({
+    name: z.string().min(2).max(160),
+    dateContacted: z.string().min(8).optional(), // yyyy-mm-dd
+    source: z.string().max(80).optional(),
+    phone: z.string().min(6).max(60),
+    email: z.string().email().optional().or(z.literal("")).nullable(),
+
+    interestedArea: z.string().max(120).optional().nullable(),
+    budgetMin: z.number().int().optional().nullable(),
+    budgetMax: z.number().int().optional().nullable(),
+    bedrooms: z.number().int().optional().nullable(),
+
+    urgency: z.enum(["HOT", "WARM", "COLD"]).optional(),
+    status: z.enum(["OPEN", "FOLLOW_UP", "CLOSED"]).optional(),
+
+    projectShared: z.string().max(2000).optional().nullable(),
+    feedback: z.string().max(2000).optional().nullable(),
+
+    agentAssignedId: z.string().optional().nullable(),
+});
+
+router.post("/leads/manual", async (req, res) => {
+    try {
+        const agentId = agentIdFromReq(req);
+
+        const parsed = CreateManualLeadSchema.safeParse(req.body);
+        if (!parsed.success) return res.status(400).json({ error: "Invalid body" });
+
+        const dStr = parsed.data.dateContacted;
+        const dateContacted = dStr ? new Date(dStr) : new Date();
+        if (Number.isNaN(dateContacted.getTime())) {
+            return res.status(400).json({ error: "Invalid dateContacted" });
+        }
+
+        const created = await prisma.client.create({
+            data: {
+                clientType: "LEAD",
+                name: parsed.data.name.trim(),
+                dateContacted,
+
+                source: (parsed.data.source || "MANUAL").trim(),
+                phone: parsed.data.phone?.trim() || null,
+                email: parsed.data.email ? String(parsed.data.email).trim() : null,
+
+                interestedArea: parsed.data.interestedArea?.trim() || null,
+                budgetMin: parsed.data.budgetMin ?? null,
+                budgetMax: parsed.data.budgetMax ?? null,
+                bedrooms: parsed.data.bedrooms ?? null,
+
+                urgency: parsed.data.urgency || "WARM",
+                status: parsed.data.status || "OPEN",
+
+                projectShared: parsed.data.projectShared?.trim() || null,
+                feedback: parsed.data.feedback?.trim() || null,
+
+                createdById: agentId,
+                agentAssignedId: parsed.data.agentAssignedId || agentId,
+            },
+        });
+
+        res.json({ item: created });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: "Failed to create lead" });
+    }
 });
 
 module.exports = router;

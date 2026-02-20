@@ -10,7 +10,7 @@ function auth(req, res, next) {
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
 
-    // normalize user shape (important!)
+    // ✅ normalize user shape (important!)
     const id = payload.sub || payload.id || payload.userId || payload.uid;
     if (!id) return res.status(401).json({ error: "Invalid token (missing user id)" });
 
