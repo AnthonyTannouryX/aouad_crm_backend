@@ -6,8 +6,6 @@ const { prisma } = require("../lib/prisma");
 /**
  * Normalize listing to always expose:
  * - mainImageUrl: string | null
- * - developerName (fallback from listing fields)
- * - assignedAgent minimal info
  *
  * IMPORTANT: this assumes your ListingImage model has `url` OR `imageUrl` OR `src`.
  * If your field name is different, change pickImageUrl().
@@ -19,6 +17,7 @@ function pickImageUrl(img) {
 
 function normalizeListing(l) {
     const firstImg = Array.isArray(l.images) && l.images.length ? l.images[0] : null;
+
     const mainImageUrl =
         l.mainImageUrl ||
         l.coverImageUrl ||
@@ -29,7 +28,6 @@ function normalizeListing(l) {
     return {
         ...l,
         mainImageUrl,
-        // keep images as-is but ensure they at least have a URL-ish field if you want
         images: Array.isArray(l.images) ? l.images : [],
     };
 }
@@ -40,9 +38,7 @@ router.get("/listings", async (req, res) => {
         country: z.string().trim().min(1).optional(),
         listingType: z.enum(["OFF_PLAN", "FOR_SALE", "FOR_RENT"]).optional(),
         featured: z.enum(["true", "false"]).optional(),
-        // free text
         q: z.string().optional(),
-        // agent name or slug
         agent: z.string().optional(),
     });
 
@@ -100,15 +96,22 @@ router.get("/listings", async (req, res) => {
             orderBy: { createdAt: "desc" },
             include: {
                 images: { orderBy: { order: "asc" } },
-                // public-safe agent info (NO phone unless you explicitly want it public)
+
+                // ✅ Public-safe agent info + phone so WhatsApp works
                 assignedAgent: {
-                    select: { id: true, fullName: true, slug: true, photoUrl: true },
+                    select: {
+                        id: true,
+                        fullName: true,
+                        slug: true,
+                        photoUrl: true,
+                        phone: true, // ✅ exists in your schema
+                        // whatsapp: true, // ❌ REMOVE (doesn't exist)
+                    },
                 },
             },
         });
 
-        const normalized = items.map(normalizeListing);
-        res.json({ items: normalized });
+        res.json({ items: items.map(normalizeListing) });
     } catch (e) {
         console.error(e);
         res.status(500).json({ error: "Failed to load listings" });
