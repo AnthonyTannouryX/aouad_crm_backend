@@ -438,3 +438,5 @@ model Appointment {
   @@index([listingId])
   @@index([agentId, startAt])
 }
+
+

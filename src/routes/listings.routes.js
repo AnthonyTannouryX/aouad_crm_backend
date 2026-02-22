@@ -21,9 +21,21 @@ const toFloatOrNull = (v) => {
   return n;
 };
 
+// normalize for case-insensitive de-dupe + search
+const norm = (v) =>
+  String(v || "")
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, " ");
+
+// nicer display (optional)
+const pretty = (s) =>
+  String(s || "")
+    .trim()
+    .replace(/\s+/g, " ");
+
 /* =========================
    Validation Schemas
-   - accept numbers OR numeric strings (because forms)
 ========================= */
 const numIntOptional = z
   .union([z.number(), z.string()])
@@ -64,7 +76,6 @@ const createListingSchema = z.object({
   ),
   addressText: z.string().max(200).nullable().optional(),
 
-  // CRM core (required in your DB model)
   propertyType: z.enum(["APARTMENT", "VILLA", "TOWNHOUSE", "PENTHOUSE", "LAND"]),
   category: z.enum(["OFF_PLAN", "READY", "SECONDARY"]),
   status: z.enum(["AVAILABLE", "RESERVED", "SOLD", "OFF_MARKET"]).optional(),
@@ -86,7 +97,6 @@ const createListingSchema = z.object({
   ownerType: z.string().nullable().optional(),
   listingSource: z.string().nullable().optional(),
 
-  /* ===== WEBSITE FIELDS ===== */
   listingType: z.enum(["OFF_PLAN", "FOR_SALE", "FOR_RENT"]),
   featured: z.boolean().optional(),
   isHidden: z.boolean().optional(),
@@ -106,6 +116,67 @@ const createListingSchema = z.object({
 const updateListingSchema = createListingSchema.partial();
 
 /* =========================
+   ✅ REAL DB AREAS (ADMIN)
+   GET /api/listings/areas?country=dubai&city=Dubai&q=ashr
+========================= */
+router.get("/areas", auth, requireRole("ADMIN"), async (req, res) => {
+  try {
+    const qSchema = z.object({
+      country: z.string().trim().optional(),
+      city: z.string().trim().optional(),
+      q: z.string().trim().optional(),
+      limit: z.string().optional(),
+    });
+
+    const parsed = qSchema.safeParse(req.query);
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: "Invalid query",
+        details: parsed.error.flatten(),
+      });
+    }
+
+    const country = parsed.data.country ? String(parsed.data.country).toLowerCase() : "";
+    const city = parsed.data.city ? String(parsed.data.city).trim() : "";
+    const q = parsed.data.q ? norm(parsed.data.q) : "";
+    const limit = parsed.data.limit ? Math.max(1, Math.min(500, Number(parsed.data.limit))) : 200;
+
+    const where = {
+      deletedAt: null,
+      ...(country ? { country: { equals: country } } : {}),
+      ...(city ? { city: { equals: city } } : {}),
+    };
+
+    const rows = await prisma.listing.findMany({
+      where,
+      select: { area: true },
+      take: 2000, // scan enough, we will uniq + cut to limit
+      orderBy: { createdAt: "desc" },
+    });
+
+    // case-insensitive unique
+    const map = new Map(); // norm -> display
+    for (const r of rows) {
+      const raw = pretty(r.area);
+      if (!raw) continue;
+      const key = norm(raw);
+      if (!key) continue;
+
+      // search filter (case-insensitive contains)
+      if (q && !key.includes(q)) continue;
+
+      if (!map.has(key)) map.set(key, raw);
+    }
+
+    const items = Array.from(map.values()).sort((a, b) => a.localeCompare(b)).slice(0, limit);
+    res.json({ items });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "Failed to load areas" });
+  }
+});
+
+/* =========================
    Create Listing
 ========================= */
 router.post("/", auth, async (req, res) => {
@@ -119,7 +190,6 @@ router.post("/", auth, async (req, res) => {
 
   const data = parsed.data;
 
-  // admin may assign, agent cannot (will become null)
   const assignedAgentId =
     req.user.role === "ADMIN" ? data.assignedAgentId ?? null : null;
 
@@ -130,7 +200,6 @@ router.post("/", auth, async (req, res) => {
 
         country: data.country ? String(data.country).toLowerCase() : null,
 
-        // ✅ Map
         latitude: toFloatOrNull(data.latitude),
         longitude: toFloatOrNull(data.longitude),
         addressText: data.addressText ?? null,
@@ -169,7 +238,6 @@ router.post("/", auth, async (req, res) => {
         currency: data.currency ?? "USD",
         description: data.description ?? null,
 
-        // ✅ FIX: your auth normalizes req.user.id
         createdById: req.user.id,
         assignedAgentId,
       },
@@ -211,10 +279,7 @@ router.get("/", auth, async (req, res) => {
     req.user.role === "ADMIN"
       ? {}
       : {
-        OR: [
-          { createdById: req.user.id },
-          { assignedAgentId: req.user.id },
-        ],
+        OR: [{ createdById: req.user.id }, { assignedAgentId: req.user.id }],
       };
 
   const countryKey = country ? String(country).toLowerCase() : null;
@@ -274,7 +339,6 @@ router.patch("/:id", auth, async (req, res) => {
 
   const incoming = { ...parsed.data };
 
-  // Non-admins cannot change sensitive website/admin fields
   if (req.user.role !== "ADMIN") {
     delete incoming.assignedAgentId;
     delete incoming.featured;
@@ -282,14 +346,12 @@ router.patch("/:id", auth, async (req, res) => {
     delete incoming.deletedAt;
   }
 
-  // Normalize country if present
   if ("country" in incoming) {
     incoming.country = incoming.country
       ? String(incoming.country).toLowerCase()
       : null;
   }
 
-  // Convert numeric fields safely (because partial() may pass undefined)
   if ("latitude" in incoming) incoming.latitude = toFloatOrNull(incoming.latitude);
   if ("longitude" in incoming) incoming.longitude = toFloatOrNull(incoming.longitude);
   if ("price" in incoming) incoming.price = toIntOrNull(incoming.price);
