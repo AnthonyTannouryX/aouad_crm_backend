@@ -172,7 +172,8 @@ model Listing {
   latitude    Float?
   longitude   Float?
   addressText String?
-
+  brochureUrl String?
+  brochureKey String?
   listingType ListingType @default(OFF_PLAN)
   featured    Boolean     @default(false)
   isHidden    Boolean     @default(false)

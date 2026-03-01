@@ -117,5 +117,41 @@ router.get("/listings", async (req, res) => {
         res.status(500).json({ error: "Failed to load listings" });
     }
 });
+router.get("/listings/:id", async (req, res) => {
+    const id = String(req.params.id || "").trim();
+    if (!id) return res.status(400).json({ error: "Missing id" });
 
+    try {
+        const item = await prisma.listing.findFirst({
+            where: {
+                id,
+                deletedAt: null,
+                isHidden: false,
+            },
+            include: {
+                images: { orderBy: { order: "asc" } },
+                assignedAgent: {
+                    select: {
+                        id: true,
+                        fullName: true,
+                        slug: true,
+                        photoUrl: true,
+                        phone: true,
+                    },
+                },
+            },
+        });
+
+        if (!item) return res.status(404).json({ error: "Listing not found" });
+
+        // ✅ IMPORTANT: brochureUrl must be returned
+        // Prisma include already returns scalar fields by default.
+        // So as long as Listing has brochureUrl/brochureKey columns, they will be present here.
+
+        return res.json({ item: normalizeListing(item) });
+    } catch (e) {
+        console.error(e);
+        return res.status(500).json({ error: "Failed to load listing" });
+    }
+});
 module.exports = router;

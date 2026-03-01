@@ -58,6 +58,7 @@ function safeExt(ext) {
    - supports:
      A) Listing images
      B) Agent photo
+     C) ✅ Listing brochure PDF
 ========================= */
 
 // Listing presign schema (added sizeBytes)
@@ -67,7 +68,7 @@ const listingPresignSchema = z.object({
     .array(
       z.object({
         contentType: z.string().min(3), // image/jpeg
-        ext: z.string().min(1),         // jpg/png/webp
+        ext: z.string().min(1), // jpg/png/webp
         isCover: z.boolean().optional(),
         sizeBytes: z.number().int().positive().optional(), // ✅ used for 100MB max
       })
@@ -84,16 +85,27 @@ const agentPresignSchema = z.object({
   sizeBytes: z.number().int().positive().optional(), // ✅ used for 100MB max
 });
 
+// ✅ Brochure presign schema (PDF only)
+const brochurePresignSchema = z.object({
+  type: z.literal("listing-brochure"),
+  listingId: z.string(),
+  contentType: z.literal("application/pdf"),
+  ext: z.literal("pdf"),
+  sizeBytes: z.number().int().positive().optional(), // ✅ used for 100MB max
+});
+
 router.post("/presign", auth, async (req, res) => {
   const listingParsed = listingPresignSchema.safeParse(req.body);
   const agentParsed = agentPresignSchema.safeParse(req.body);
+  const brochureParsed = brochurePresignSchema.safeParse(req.body);
 
-  if (!listingParsed.success && !agentParsed.success) {
+  if (!listingParsed.success && !agentParsed.success && !brochureParsed.success) {
     return res.status(400).json({
       error: "Invalid body",
       details: {
         listingMode: listingParsed.success ? null : listingParsed.error.flatten(),
         agentMode: agentParsed.success ? null : agentParsed.error.flatten(),
+        brochureMode: brochureParsed.success ? null : brochureParsed.error.flatten(),
       },
     });
   }
@@ -104,7 +116,7 @@ router.post("/presign", auth, async (req, res) => {
 
   const r2 = getR2Client();
 
-  /* ===== A) LISTING MODE ===== */
+  /* ===== A) LISTING MODE (images) ===== */
   if (listingParsed.success) {
     const { listingId, files } = listingParsed.data;
 
@@ -150,6 +162,40 @@ router.post("/presign", auth, async (req, res) => {
     }
 
     return res.json({ uploads });
+  }
+
+  /* ===== ✅ C) LISTING BROCHURE MODE (PDF) ===== */
+  if (brochureParsed.success) {
+    const { listingId, contentType, ext, sizeBytes } = brochureParsed.data;
+
+    // ✅ enforce 100MB max (by sizeBytes if provided)
+    if (typeof sizeBytes === "number" && sizeBytes > MAX_BYTES) {
+      return res.status(400).json({ error: "File too large. Max 100MB." });
+    }
+
+    const listing = await getListingOr404(listingId);
+    if (!listing) return res.status(404).json({ error: "Listing not found" });
+
+    if (!canAccessListing(req, listing)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    // stable key so re-upload replaces the brochure for this listing
+    const key = `listings/${listingId}/brochure.${safeExt(ext)}`; // ext === "pdf"
+
+    const cmd = new PutObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      ContentType: contentType, // application/pdf
+      CacheControl: "public, max-age=31536000, immutable",
+    });
+
+    const uploadUrl = await getSignedUrl(r2, cmd, { expiresIn: 60 * 10 });
+    const publicUrl = `${publicBase}/${key}`;
+
+    return res.json({
+      uploads: [{ key, uploadUrl, publicUrl }],
+    });
   }
 
   /* ===== B) AGENT PHOTO MODE ===== */
@@ -264,6 +310,40 @@ router.post("/listing/:id/images", auth, async (req, res) => {
 });
 
 /* =========================
+   ✅ 2b) SAVE BROCHURE METADATA TO DB
+========================= */
+
+const saveBrochureSchema = z.object({
+  key: z.string().min(3),
+  url: z.string().url(),
+});
+
+router.post("/listing/:id/brochure", auth, async (req, res) => {
+  const listingId = req.params.id;
+
+  const parsed = saveBrochureSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Invalid body", details: parsed.error.flatten() });
+  }
+
+  const listing = await getListingOr404(listingId);
+  if (!listing) return res.status(404).json({ error: "Listing not found" });
+
+  if (!canAccessListing(req, listing)) return res.status(403).json({ error: "Forbidden" });
+
+  const updated = await prisma.listing.update({
+    where: { id: listingId },
+    data: {
+      brochureKey: parsed.data.key,
+      brochureUrl: parsed.data.url,
+    },
+    select: { id: true, brochureUrl: true, brochureKey: true },
+  });
+
+  return res.json({ saved: updated });
+});
+
+/* =========================
    3) SET COVER IMAGE
 ========================= */
 
@@ -331,6 +411,44 @@ router.delete("/listing/:listingId/images/:imageId", auth, async (req, res) => {
     });
     if (first) {
       await prisma.listingImage.update({ where: { id: first.id }, data: { isCover: true } });
+    }
+  }
+
+  return res.json({ success: true });
+});
+
+/* =========================
+   ✅ 4b) OPTIONAL: DELETE BROCHURE (DB + R2)
+   - admin only (matches your image delete)
+========================= */
+
+router.delete("/listing/:listingId/brochure", auth, async (req, res) => {
+  const { listingId } = req.params;
+
+  const listing = await getListingOr404(listingId);
+  if (!listing) return res.status(404).json({ error: "Listing not found" });
+
+  if (req.user.role !== "ADMIN") return res.status(403).json({ error: "Admin only" });
+
+  const env = assertBucketEnv(res);
+  if (!env) return;
+  const { bucket } = env;
+
+  const key = listing.brochureKey;
+
+  // clear DB first
+  await prisma.listing.update({
+    where: { id: listingId },
+    data: { brochureKey: null, brochureUrl: null },
+  });
+
+  // delete from R2 if we have key
+  if (key) {
+    try {
+      const r2 = getR2Client();
+      await r2.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+    } catch (e) {
+      console.error("R2 brochure delete failed:", e);
     }
   }
 
