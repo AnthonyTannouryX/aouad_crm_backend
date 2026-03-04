@@ -78,8 +78,7 @@ const createListingSchema = z.object({
 
   propertyType: z.enum(["APARTMENT", "VILLA", "TOWNHOUSE", "PENTHOUSE", "LAND"]),
   category: z.enum(["OFF_PLAN", "READY", "SECONDARY"]),
-  status: z.enum(["AVAILABLE", "RESERVED", "SOLD", "OFF_MARKET"]).optional(),
-
+  status: z.enum(["AVAILABLE", "RESERVED", "SOLD", "RENTED", "OFF_MARKET"]).optional(),
   city: z.string().min(2),
   area: z.string().min(2),
   projectName: z.string().nullable().optional(),
@@ -99,6 +98,7 @@ const createListingSchema = z.object({
 
   listingType: z.enum(["OFF_PLAN", "FOR_SALE", "FOR_RENT"]),
   featured: z.boolean().optional(),
+  featuredOrder: numIntOptional, // ✅ NEW
   isHidden: z.boolean().optional(),
 
   completionYear: numIntOptional,
@@ -136,10 +136,14 @@ router.get("/areas", auth, requireRole("ADMIN"), async (req, res) => {
       });
     }
 
-    const country = parsed.data.country ? String(parsed.data.country).toLowerCase() : "";
+    const country = parsed.data.country
+      ? String(parsed.data.country).toLowerCase()
+      : "";
     const city = parsed.data.city ? String(parsed.data.city).trim() : "";
     const q = parsed.data.q ? norm(parsed.data.q) : "";
-    const limit = parsed.data.limit ? Math.max(1, Math.min(500, Number(parsed.data.limit))) : 200;
+    const limit = parsed.data.limit
+      ? Math.max(1, Math.min(500, Number(parsed.data.limit)))
+      : 200;
 
     const where = {
       deletedAt: null,
@@ -150,11 +154,10 @@ router.get("/areas", auth, requireRole("ADMIN"), async (req, res) => {
     const rows = await prisma.listing.findMany({
       where,
       select: { area: true },
-      take: 2000, // scan enough, we will uniq + cut to limit
+      take: 2000,
       orderBy: { createdAt: "desc" },
     });
 
-    // case-insensitive unique
     const map = new Map(); // norm -> display
     for (const r of rows) {
       const raw = pretty(r.area);
@@ -162,13 +165,15 @@ router.get("/areas", auth, requireRole("ADMIN"), async (req, res) => {
       const key = norm(raw);
       if (!key) continue;
 
-      // search filter (case-insensitive contains)
       if (q && !key.includes(q)) continue;
 
       if (!map.has(key)) map.set(key, raw);
     }
 
-    const items = Array.from(map.values()).sort((a, b) => a.localeCompare(b)).slice(0, limit);
+    const items = Array.from(map.values())
+      .sort((a, b) => a.localeCompare(b))
+      .slice(0, limit);
+
     res.json({ items });
   } catch (e) {
     console.error(e);
@@ -194,6 +199,19 @@ router.post("/", auth, async (req, res) => {
     req.user.role === "ADMIN" ? data.assignedAgentId ?? null : null;
 
   try {
+    // ✅ If featured=true and featuredOrder missing/invalid, append at end
+    let featuredOrder = toIntOrNull(data.featuredOrder);
+
+    const isFeatured = data.featured ?? false;
+    if (isFeatured && (featuredOrder == null || featuredOrder < 0)) {
+      const agg = await prisma.listing.aggregate({
+        where: { featured: true, deletedAt: null },
+        _max: { featuredOrder: true },
+      });
+      const max = agg?._max?.featuredOrder;
+      featuredOrder = Number.isInteger(max) ? max + 1 : 0;
+    }
+
     const listing = await prisma.listing.create({
       data: {
         title: data.title,
@@ -226,7 +244,8 @@ router.post("/", auth, async (req, res) => {
         listingSource: data.listingSource ?? null,
 
         listingType: data.listingType,
-        featured: data.featured ?? false,
+        featured: isFeatured,
+        featuredOrder: isFeatured ? featuredOrder : null, // ✅ keep null if not featured
         isHidden: data.isHidden ?? false,
 
         completionYear: toIntOrNull(data.completionYear),
@@ -299,7 +318,12 @@ router.get("/", auth, async (req, res) => {
     const listings = await prisma.listing.findMany({
       where,
       take,
-      orderBy: { createdAt: "desc" },
+      // ✅ Featured first, then featuredOrder (nulls last-ish), then newest
+      orderBy: [
+        { featured: "desc" },
+        { featuredOrder: "asc" },
+        { createdAt: "desc" },
+      ],
       include: {
         images: { orderBy: { order: "asc" } },
         assignedAgent: true,
@@ -339,9 +363,11 @@ router.patch("/:id", auth, async (req, res) => {
 
   const incoming = { ...parsed.data };
 
+  // non-admin cannot change these
   if (req.user.role !== "ADMIN") {
     delete incoming.assignedAgentId;
     delete incoming.featured;
+    delete incoming.featuredOrder;
     delete incoming.isHidden;
     delete incoming.deletedAt;
   }
@@ -362,6 +388,24 @@ router.patch("/:id", auth, async (req, res) => {
   if ("bedrooms" in incoming) incoming.bedrooms = toIntOrNull(incoming.bedrooms);
   if ("bathrooms" in incoming) incoming.bathrooms = toIntOrNull(incoming.bathrooms);
   if ("parking" in incoming) incoming.parking = toIntOrNull(incoming.parking);
+  if ("featuredOrder" in incoming) incoming.featuredOrder = toIntOrNull(incoming.featuredOrder);
+
+  // ✅ if admin turns featured OFF, clear featuredOrder to avoid junk ordering
+  if ("featured" in incoming && incoming.featured === false) {
+    incoming.featuredOrder = null;
+  }
+
+  // ✅ if admin turns featured ON but no featuredOrder provided, append at end
+  if ("featured" in incoming && incoming.featured === true) {
+    if (!("featuredOrder" in incoming) || incoming.featuredOrder == null || incoming.featuredOrder < 0) {
+      const agg = await prisma.listing.aggregate({
+        where: { featured: true, deletedAt: null },
+        _max: { featuredOrder: true },
+      });
+      const max = agg?._max?.featuredOrder;
+      incoming.featuredOrder = Number.isInteger(max) ? max + 1 : 0;
+    }
+  }
 
   try {
     const updated = await prisma.listing.update({
@@ -379,6 +423,65 @@ router.patch("/:id", auth, async (req, res) => {
     res.status(500).json({ error: "Failed to update listing" });
   }
 });
+
+/* =========================
+   ✅ Featured Order (ADMIN) - reorder featured items 0..N (no duplicates)
+   PATCH /api/listings/:id/featured-order { featuredOrder: 3 }
+========================= */
+router.patch(
+  "/:id/featured-order",
+  auth,
+  requireRole("ADMIN"),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const newOrder = Number(req.body?.featuredOrder);
+
+      if (!Number.isInteger(newOrder) || newOrder < 0) {
+        return res.status(400).json({ error: "Invalid featuredOrder" });
+      }
+
+      const listing = await prisma.listing.findUnique({
+        where: { id },
+        select: { id: true, featured: true, deletedAt: true },
+      });
+
+      if (!listing || listing.deletedAt) {
+        return res.status(404).json({ error: "Listing not found" });
+      }
+
+      if (!listing.featured) {
+        return res.status(400).json({ error: "Listing is not featured" });
+      }
+
+      const featured = await prisma.listing.findMany({
+        where: { featured: true, deletedAt: null },
+        orderBy: [{ featuredOrder: "asc" }, { createdAt: "asc" }],
+        select: { id: true },
+      });
+
+      const ids = featured.map((x) => x.id).filter((x) => x !== id);
+
+      // clamp insert index
+      const idx = Math.min(newOrder, ids.length);
+      ids.splice(idx, 0, id);
+
+      await prisma.$transaction(
+        ids.map((listingId, index) =>
+          prisma.listing.update({
+            where: { id: listingId },
+            data: { featuredOrder: index },
+          })
+        )
+      );
+
+      res.json({ success: true, ids });
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: "Failed to update featured order" });
+    }
+  }
+);
 
 /* =========================
    Hide / Unhide (ADMIN)
@@ -399,9 +502,7 @@ router.post("/:id/unhide", auth, requireRole("ADMIN"), async (req, res) => {
   res.json(updated);
 });
 
-/* =========================
-   Soft Delete (ADMIN)
-========================= */
+
 router.delete("/:id", auth, requireRole("ADMIN"), async (req, res) => {
   await prisma.listing.update({
     where: { id: req.params.id },

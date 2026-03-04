@@ -6,9 +6,6 @@ const { prisma } = require("../lib/prisma");
 /**
  * Normalize listing to always expose:
  * - mainImageUrl: string | null
- *
- * IMPORTANT: this assumes your ListingImage model has `url` OR `imageUrl` OR `src`.
- * If your field name is different, change pickImageUrl().
  */
 function pickImageUrl(img) {
     if (!img) return null;
@@ -32,6 +29,31 @@ function normalizeListing(l) {
     };
 }
 
+/**
+ * Build Prisma orderBy based on query.
+ * - If featured=true and sort not provided => featuredOrder ASC first
+ * - sort=featuredOrder => featuredOrder ASC first
+ * - sort=newest => createdAt DESC
+ */
+function buildOrderBy({ featured, sort }) {
+    const featuredOn = featured === "true";
+
+    const s = String(sort || "").trim().toLowerCase();
+    const wantsFeaturedOrder = s === "featuredorder" || s === "featured_order" || s === "featured";
+
+    // Default: if featured=true and no sort specified -> featured order
+    if (featuredOn && !s) {
+        return [{ featuredOrder: "asc" }, { createdAt: "desc" }];
+    }
+
+    if (wantsFeaturedOrder) {
+        return [{ featuredOrder: "asc" }, { createdAt: "desc" }];
+    }
+
+    // newest (or default)
+    return [{ createdAt: "desc" }];
+}
+
 router.get("/listings", async (req, res) => {
     const qSchema = z.object({
         limit: z.string().optional(),
@@ -40,6 +62,9 @@ router.get("/listings", async (req, res) => {
         featured: z.enum(["true", "false"]).optional(),
         q: z.string().optional(),
         agent: z.string().optional(),
+
+        // ✅ NEW
+        sort: z.enum(["featuredOrder", "newest"]).optional(),
     });
 
     const parsed = qSchema.safeParse(req.query);
@@ -50,7 +75,7 @@ router.get("/listings", async (req, res) => {
         });
     }
 
-    const { limit, country, listingType, featured, q, agent } = parsed.data;
+    const { limit, country, listingType, featured, q, agent, sort } = parsed.data;
 
     const take = limit ? Math.max(1, Math.min(800, Number(limit))) : 100;
     const countryKey = country ? String(country).toLowerCase() : null;
@@ -89,23 +114,22 @@ router.get("/listings", async (req, res) => {
             : {}),
     };
 
+    const orderBy = buildOrderBy({ featured, sort });
+
     try {
         const items = await prisma.listing.findMany({
             where,
             take,
-            orderBy: { createdAt: "desc" },
+            orderBy,
             include: {
                 images: { orderBy: { order: "asc" } },
-
-                // ✅ Public-safe agent info + phone so WhatsApp works
                 assignedAgent: {
                     select: {
                         id: true,
                         fullName: true,
                         slug: true,
                         photoUrl: true,
-                        phone: true, // ✅ exists in your schema
-                        // whatsapp: true, // ❌ REMOVE (doesn't exist)
+                        phone: true,
                     },
                 },
             },
@@ -114,9 +138,16 @@ router.get("/listings", async (req, res) => {
         res.json({ items: items.map(normalizeListing) });
     } catch (e) {
         console.error(e);
+
+        /**
+         * If you haven't added `featuredOrder` to Listing yet,
+         * Prisma will throw "Unknown argument featuredOrder in orderBy".
+         * In that case, add the column + migrate.
+         */
         res.status(500).json({ error: "Failed to load listings" });
     }
 });
+
 router.get("/listings/:id", async (req, res) => {
     const id = String(req.params.id || "").trim();
     if (!id) return res.status(400).json({ error: "Missing id" });
@@ -144,14 +175,11 @@ router.get("/listings/:id", async (req, res) => {
 
         if (!item) return res.status(404).json({ error: "Listing not found" });
 
-        // ✅ IMPORTANT: brochureUrl must be returned
-        // Prisma include already returns scalar fields by default.
-        // So as long as Listing has brochureUrl/brochureKey columns, they will be present here.
-
         return res.json({ item: normalizeListing(item) });
     } catch (e) {
         console.error(e);
         return res.status(500).json({ error: "Failed to load listing" });
     }
 });
+
 module.exports = router;

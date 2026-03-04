@@ -41,6 +41,7 @@ enum ListingStatus {
   AVAILABLE
   RESERVED
   SOLD
+  RENTED
   OFF_MARKET
 }
 
