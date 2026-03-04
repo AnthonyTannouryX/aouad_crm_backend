@@ -178,6 +178,7 @@ model Listing {
   featured    Boolean     @default(false)
   isHidden    Boolean     @default(false)
   deletedAt   DateTime?
+  featuredOrder Int?      @default(0) 
 
   country        String?
   locationLabel  String?
@@ -240,6 +241,7 @@ model Listing {
   @@index([assignedAgentId])
   @@index([createdById])
   @@index([listingType])
+  @@index([featured, featuredOrder])
   @@index([featured])
   @@index([isHidden])
   @@index([deletedAt])
